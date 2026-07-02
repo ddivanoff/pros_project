@@ -22,6 +22,11 @@ dependencies:
 Then run in terminal `conda env create -f environment.yml`
 
 
+To activate/deactivate:
+
+`conda activate pros` / `conda deactivate`
+
+
 ## venv
 
 
@@ -31,9 +36,9 @@ In the desired dir, run in terminal:
 `python3 -m venv example-prj/example-venv`
 
 
-Then:
+To activate/deactivate:
 
-`source example-prj/example-venv/bin/activate`
+`source example-prj/example-venv/bin/activate` / `deactivate`
 
 
 Each library can be installed with `pip` as:
