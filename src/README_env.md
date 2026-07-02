@@ -31,6 +31,11 @@ In the desired dir, run in terminal:
 `python3 -m venv example-prj/example-venv`
 
 
+Then:
+
+`source example-prj/example-venv/bin/activate`
+
+
 Each library can be installed with `pip` as:
 
 
