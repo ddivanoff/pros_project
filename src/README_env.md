@@ -16,6 +16,11 @@ dependencies:
  - ipywidgets
  - fastparquet
  - pyarrow
+ - scikit-learn
+ - imbalanced-learn
+ - boruta
+ - optuna
+ - lightgbm
 ```
 
 
@@ -47,10 +52,19 @@ Each library can be installed with `pip` as:
 `python3 -m pip install lib_name`
 
 
-## Optional if kernel name is not visualised
+## Optional (for macOS) 
+
+
+### If kernel name is not visualised:
 
 
 `python3 -m ipykernel install --user --name=pros --display-name "pros"`
+
+
+### For LGBM compatibility:
+
+
+`% brew install libomp`
 
 
 ## Optional for GIT and VC

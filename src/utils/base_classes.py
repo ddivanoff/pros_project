@@ -1,12 +1,16 @@
-import pickle
+import pickle, optuna
 
 import pandas as pd
 import numpy as np
+import lightgbm as lgb
 
-from sklearn.model_selection import train_test_split  
+from sklearn.model_selection import train_test_split, StratifiedKFold  
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, LabelEncoder         
-from sklearn.feature_selection import VarianceThreshold 
+from sklearn.feature_selection import VarianceThreshold
+from sklearn.metrics import average_precision_score
+from sklearn.utils.class_weight import compute_class_weight
+from sklearn.base import clone
 
 from imblearn.ensemble import BalancedRandomForestClassifier
 
@@ -110,10 +114,10 @@ class FeatureSelection():
         
         *******
         
-        X_train, X_val, X_test: pandas.core.frame.DataFrame
+        X_train, X_val, X_test: pandas.core.frame.DataFrame, default = None
            The splitted data frames
            
-        y_train, y_val, y_test: pandas.core.series.Series
+        y_train, y_val, y_test: pandas.core.series.Series, default = None
            The corresponding labels
            
         """
@@ -148,8 +152,11 @@ class FeatureSelection():
             
         if target not in df.columns:
             raise AttributeError(f"{target} not in {df}.")
+            
+            
+        print("\nNaN check:\n\n", df.isnull().sum())
         
-        
+        assert df.fillna(0).isnull().sum().max() == 0, 'NaN values presented in the data.'
         
         X_train, X_val_test, y_train, y_val_test = train_test_split(df.drop(target, axis=1),
                                                                     df[target],
@@ -174,7 +181,7 @@ class FeatureSelection():
                 == round(y_test[y_test == label].shape[0]/y_test.shape[0], 2),\
                 f"Stratify crition violated for label {label}. Check the split again!"
 
-            print(f'\nStratify criterion satisfied. Imbalance ratio for label {label}:',
+            print(f'\nStratify criterion satisfied. Class ratio for label {label}:',
                   round(y_train[y_train == label].shape[0]/y_train.shape[0], 2))
             
         assert len(
@@ -233,7 +240,7 @@ class FeatureSelection():
         
         *******
         
-        y_train, y_val, y_test: pandas.core.series.Series
+        y_train, y_val, y_test: pandas.core.series.Series, default = None
            All labels after encoding
            
         """
@@ -290,7 +297,7 @@ class FeatureSelection():
         
         *******
         
-        X_train, X_val, X_test: pandas.core.frame.DataFrame
+        X_train, X_val, X_test: pandas.core.frame.DataFrame, default = None
            All features before encoding
            
         categories: list[str], default = None
@@ -376,7 +383,7 @@ class FeatureSelection():
         
         *******
         
-        X_train, X_val, X_test: pandas.core.frame.DataFrame
+        X_train, X_val, X_test: pandas.core.frame.DataFrame, default = None
            Initial features before filtration
            
         threshold: float, default = None
@@ -542,7 +549,7 @@ class FeatureSelection():
             max_features=max_features,
             criterion=criterion,
             bootstrap=True,
-            oob_score=True,
+            oob_score=False,
             sampling_strategy="majority",
             replacement=True,
             random_state=42,
@@ -615,5 +622,312 @@ class FeatureSelection():
             file = pickle.load(import_file)
 
         return file
+
+    
+class OptunaOptimization(FeatureSelection):
+    
+    
+    """
+    
+    A class to perform hyparamteric optimization from arbitrary data frame.
+    It is a child class from its parent FeatureSelection().
+
+        
+    ---------------------------------------------------------------
+    
+    
+    Methods
+    
+    *******
+    
+    objective(trial)
+    run_optuna(direction, n_trials)
+    run_cv(folds, clf)
+    
+    ---------------------------------------------------------------
+    
+    Attributes
+    
+    ********
+    
+    X_train, y_train
+    X_val, y_val
+    clf
+    trial_params
+    fit_params
+    metric
+    
+    """
+    
+    
+    def __init__(self, X_train: pd.core.frame.DataFrame = None,
+                       y_train: pd.core.series.Series = None,
+                       X_val: pd.core.frame.DataFrame = None,
+                       y_val: pd.core.series.Series = None,
+                       clf: object = None,
+                       trial_params: dict = None,
+                       fit_params: dict = None,
+                       metric: object = None):
+        
+        super().__init__()
+        
+        
+        """
+        
+        X_train, X_val: pandas.core.frame.DataFrame, default = None
+           The splitted data frames
+           
+        y_train, y_val: pandas.core.series.Series, default = None
+           The corresponding labels
+           
+        clf: scikit-learn object method, default = None
+           Classifier with .fit() to be invoked
+           
+        trial_params: dict, default = None
+           Hyperamaters to be tuned
+           
+        fit_params: dict, default = None
+           Additional (optional) paramters when .fit() is invoked
+           
+        metric: object, default = None
+           A desired classification metric
+           
+        """
+        
+        
+        if y_train is None or y_val is None :
+            raise TypeError("Unsupported type for either <<y_train/val>>. Expected - pandas.core.series.Series.")
+
+        if (
+            not isinstance(y_train, pd.core.series.Series)
+            or not isinstance(y_val, pd.core.series.Series)
+        ):
+            raise TypeError("Unsupported type for either <<y_train/val>>. Expected - pandas.core.series.Series.")
+
+        if X_train is None or X_val is None :
+            raise TypeError("Unsupported type for either <<X_train/val>>. Expected - pandas.core.frame.DataFrame.")
+
+        if (
+            not isinstance(X_train, pd.core.frame.DataFrame)
+            or not isinstance(X_val, pd.core.frame.DataFrame)
+        ):
+            raise TypeError("Unsupported type for either <<X_train/val>>. Expected - pandas.core.frame.DataFrame.")    
+        
+        if clf is None:
+            raise TypeError("Unsupported type for <<clf>>.")
+            
+        if trial_params is None:
+            raise TypeError("Unsupported type for <<trial_params>>. Expected - dict")
+            
+        if not isinstance(trial_params, dict):
+            raise TypeError("Unsupported type for <<trial_params>>. Expected - dict")
+        
+        if metric is None:
+            raise TypeError("Unsupported type for <<metric>>.")
+                            
+        self.X_train = X_train
+        self.y_train = y_train
+        self.X_val = X_val
+        self.y_val = y_val
+        self.clf = clf
+        self.trial_params = trial_params
+        self.fit_params = fit_params
+        self.metric = metric
+        
+        
+    def objective(self, trial: optuna.trial.Trial = None) -> float:
+        
+        
+        """
+        
+        This method is to select the most optimal hyperparameters with Optuna.
+        
+        
+        ------------------------------------------------------------------
+        
+        Inputs
+        
+        *******
+        
+        trial: optuna.trial.Trial, default = None
+           Optuna object with hypermarameters to optimize
+           
+        ------------------------------------------------------------------   
+        
+        Returns
+        
+        *******
+        
+        self.metric(self.y_val, scores): float
+           Optimized classification metric
+           
+        """
+        
+        
+        if trial is None:
+            raise TypeError("Unsupported type for <<trial>>. Expected - optuna.trial.Trial")
+            
+        if not isinstance(trial, optuna.trial.Trial):
+            raise TypeError("Unsupported type for <<trial>>. Expected - optuna.trial.Trial")
+            
+        params = {}
+        
+        for name, (dtype, low, high, log) in self.trial_params.items():
+
+            if dtype == "float":
+                params[name] = trial.suggest_float(name, low, high, log=log)
+
+            if dtype == "int":
+                params[name] = trial.suggest_int(name, low, high, log=log)
+                
+        model = clone(self.clf)
+        
+        model.set_params(**params)
+        
+        if self.fit_params is None:
+            model.fit(self.X_train, self.y_train)
+            
+        if self.fit_params is not None:
+            model.fit(self.X_train, self.y_train, **self.fit_params)
+        
+        scores = model.predict_proba(self.X_val)[:, 1]
+        
+        return self.metric(self.y_val, scores)
+        
+        
+    def run_optuna(self, direction: str = None,
+                         n_trials: int = None) -> dict:
+        
+        
+        """
+
+        This method runs Optuna.
+        
+        
+        ------------------------------------------------------------------
+        
+        Inputs
+        
+        *******
+        
+        direction: str, default = None
+           Either <<maximize>> or <<minimize>>, depending on the loss function
+           
+        n_trials: int, default = None
+           Number of times new hyperparamter values will be used with the specified clf
+           
+        ------------------------------------------------------------------   
+        
+        Returns
+        
+        *******
+        
+        study: dict
+           Record of each Optuna trial
+           
+        """
+        
+        
+        if direction is None:
+            raise TypeError("Unsupported type for <<direction>>. Expected - str")
+            
+        if not isinstance(direction, str):
+            raise TypeError("Unsupported type for <<direction>>. Expected - str")
+            
+        if n_trials is None:
+            raise TypeError("Unsupported type for <<n_trials>>. Expected - int")
+            
+        if not isinstance(n_trials, int):
+            raise TypeError("Unsupported type for <<n_trials>>. Expected - int")
+        
+        study = optuna.create_study(direction=direction)
+        
+        study.optimize(self.objective, n_trials, show_progress_bar=True)
+
+        print("\nBest Score:\n\n", study.best_value)
+        print("\nBest Params:\n\n", study.best_params)
+        
+        return study
+    
+    
+    def run_cv(self, folds:int = None,
+                     clf:object = None) -> list[float]:
+        
+        
+        """
+
+        This method will performd k-fold cross-validation. It will use the
+        pretrained clf and the corresponding classification metric from self.metric
+        
+        
+        ------------------------------------------------------------------
+        
+        Inputs
+        
+        *******
+        
+        folds: int, default = None
+           Defines the k number of cv folds
+           
+        clf: object, default = None
+           Pretrained clf object
+           
+        ------------------------------------------------------------------   
+        
+        Returns
+        
+        *******
+        
+        scores_cv: list[str]
+           Record of each fold performance
+           
+        """
+        
+        
+        if folds is None:
+            raise TypeError("Unsupported type for <<folds>>. Expected - int")
+            
+        if not isinstance(folds, int):
+            raise TypeError("Unsupported type for <<folds>>. Expected - int")
+        
+        if clf is None:
+            raise TypeError("Unsupported type for <<clf>>.")
+            
+        cv = StratifiedKFold(n_splits=folds,
+                             shuffle=True,
+                             random_state=42)
+
+        scores_cv = []
+
+        for fold, (train_idx, val_idx) in enumerate(cv.split(self.X_train,
+                                                             self.y_train),
+                                                    1):
+    
+            X_train_fold, y_train_fold = self.X_train.iloc[train_idx], self.y_train.iloc[train_idx]
+            X_val_fold, y_val_fold = self.X_train.iloc[val_idx], self.y_train.iloc[val_idx]
+
+            model_fold = clone(clf)
+            
+            if self.fit_params is None:
+                model_fold.fit(X_train_fold, y_train_fold)
+            
+            if self.fit_params is not None:
+                
+                if 'eval_set' in self.fit_params.keys():
+                    
+                    self.fit_params['eval_set'] = [(X_val_fold, y_val_fold)]
+                    
+                model_fold.fit(X_train_fold, y_train_fold, **self.fit_params)
+
+            y_val_pred_fold = model_fold.predict_proba(X_val_fold)[:, 1]
+            score_fold = self.metric(y_val_fold, y_val_pred_fold)
+
+            scores_cv.append(score_fold)
+            print(f"Fold {fold}, metric score = {score_fold:.2f}")
+
+        print(f"\nMean metric score for all {folds} CV folds:{np.mean(scores_cv):.2f} +/- {np.std(scores_cv)/np.sqrt(10):.2f}")
+        
+        return scores_cv
+    
 
     
