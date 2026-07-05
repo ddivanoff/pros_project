@@ -1,7 +1,0 @@
-# File and extentions to be ingored for VC
-
-.DS_Store
-.ipynb_checkpoints/
-checkpoints/
-__pycache__
-
