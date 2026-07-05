@@ -1,14 +1,16 @@
-import pickle, optuna
+import pickle, optuna, kds, shap
 
 import pandas as pd
 import numpy as np
 import lightgbm as lgb
+import matplotlib.pyplot as plt
 
 from sklearn.model_selection import train_test_split, StratifiedKFold  
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, LabelEncoder         
 from sklearn.feature_selection import VarianceThreshold
-from sklearn.metrics import average_precision_score
+from sklearn.metrics import average_precision_score, classification_report,\
+                            PrecisionRecallDisplay, RocCurveDisplay, ConfusionMatrixDisplay
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.base import clone
 
@@ -928,6 +930,364 @@ class OptunaOptimization(FeatureSelection):
         print(f"\nMean metric score for all {folds} CV folds:{np.mean(scores_cv):.2f} +/- {np.std(scores_cv)/np.sqrt(10):.2f}")
         
         return scores_cv
-    
 
     
+class ModelMetricsExplain():
+    
+    
+    """
+    
+    A class to evaluate pre-trained model performance and to explain
+    the relevance of the most prominent features.
+
+        
+    ---------------------------------------------------------------
+    
+    
+    Methods
+    
+    *******
+    
+    plot_probas()
+    plot_lift_curve()
+    print_classification_report()
+    plot_precsion_recall_curve()
+    plot_roc()
+    plot_confusion_matrices()
+    plot_shap()
+    
+    ---------------------------------------------------------------
+    
+    Attributes
+    
+    ********
+    
+    X_train, y_train
+    X_val, y_val
+    X_test, y_test
+    clf
+    trial_params
+    flag_export
+    path
+    
+    """
+    
+    
+    def __init__(self, X_train: pd.core.frame.DataFrame = None,
+                       y_train: pd.core.series.Series = None,
+                       X_val: pd.core.frame.DataFrame = None,
+                       y_val: pd.core.series.Series = None,
+                       X_test: pd.core.frame.DataFrame = None,
+                       y_test: pd.core.series.Series = None,
+                       clf: object = None,
+                       flag_export: bool = True,
+                       path: str = None):
+        
+        """
+        
+        X_train, X_val, X_test: pandas.core.frame.DataFrame, default = None
+           The splitted data frames
+           
+        y_train, y_val, y_test: pandas.core.series.Series, default = None
+           The corresponding labels
+           
+        clf: scikit-learn object method, default = None
+           Classifier with .fit() to be invoked
+           
+        flag_export: bool, default = True
+           Whether to export a given figure
+           
+        path: str, default = None
+           Dir for the file export
+           
+        """
+        
+        if y_train is None or y_val is None or y_test is None:
+            raise TypeError("Unsupported type for either <<y_train/val/test>>. Expected - pandas.core.series.Series.")
+
+        if (
+            not isinstance(y_train, pd.core.series.Series)
+            or not isinstance(y_val, pd.core.series.Series)
+            or not isinstance(y_test, pd.core.series.Series)
+        ):
+            raise TypeError("Unsupported type for either <<y_train/val/test>>. Expected - pandas.core.series.Series.")
+
+        if X_train is None or X_val is None or X_test is None:
+            raise TypeError("Unsupported type for either <<X_train/val/test>>. Expected - pandas.core.frame.DataFrame.")
+
+        if (
+            not isinstance(X_train, pd.core.frame.DataFrame)
+            or not isinstance(X_val, pd.core.frame.DataFrame)
+            or not isinstance(X_test, pd.core.frame.DataFrame)
+        ):
+            raise TypeError("Unsupported type for either <<X_train/val/test>>. Expected - pandas.core.frame.DataFrame.")    
+        
+        if clf is None:
+            raise TypeError("Unsupported type for <<clf>>.")
+            
+        if path is None:
+            raise TypeError("Unsupported type for <<tpath>>.")
+            
+            
+        self.X_train = X_train
+        self.y_train = y_train
+        self.X_val = X_val
+        self.y_val = y_val
+        self.X_test = X_test
+        self.y_test = y_test
+        self.clf = clf
+        self.flag_export = flag_export
+        self.path = path
+        
+    
+    def _plot_proba_distribution(self, X: pd.core.frame.DataFrame = None,
+                                       name: str = None) -> None:
+        
+        plt.figure(figsize=(12, 9))
+
+        pd.Series(self.clf.predict_proba(X)[:, 1]).hist(bins=100)
+
+        plt.xlabel("Scores", fontsize=32)
+        plt.ylabel("Counts", fontsize=32)
+        plt.title(f"predict_proba distribution with {name}", fontsize=32)
+
+        ax = plt.gca()
+        ax.tick_params(axis="both", labelsize=24)
+
+        for spine in ax.spines.values():
+            spine.set_linewidth(3)
+
+        if self.flag_export:
+            plt.savefig(self.path.format(figure=f"probs_{name}"))
+
+        plt.show()
+        
+        
+    def plot_probas(self) -> None:
+        
+        for name in ("X_train", "X_val", "X_test"):
+            X = getattr(self, name)
+            self._plot_proba_distribution(X, name)
+            
+        
+    def _plot_lift_curve(self, X: pd.core.frame.DataFrame = None,
+                               y: pd.core.series.Series = None,
+                               name: str = None) -> None:
+        
+        plt.figure(figsize=(12, 9))
+
+        kds.metrics.plot_lift(y, self.clf.predict_proba(X)[:, 1])
+
+        plt.title(f"Lift curve for {name}", fontsize=32)
+
+        ax = plt.gca()
+        ax.tick_params(axis="both", labelsize=24)
+        ax.set_xlabel(ax.get_xlabel(), fontsize=32)
+        ax.set_ylabel(ax.get_ylabel(), fontsize=32)
+
+        for spine in ax.spines.values():
+            spine.set_linewidth(3)
+            
+        legend = ax.get_legend()
+        if legend is not None:
+            for text in legend.get_texts():
+                text.set_fontsize(24)
+
+        legend.get_frame().set_linewidth(3)
+
+        for line in ax.get_lines():
+            line.set_linewidth(3)
+
+        if self.flag_export:
+            plt.savefig(self.path.format(figure=f"lift_{name}"))
+
+        plt.show()
+        
+        
+    def plot_lift_curve(self) -> None:
+        
+        data = {
+            "X_train": (self.X_train, self.y_train),
+            "X_val": (self.X_val, self.y_val),
+            "X_test": (self.X_test, self.y_test),
+        }
+
+        for name, (X, y) in data.items():
+            self._plot_lift_curve(X, y, name)
+    
+        
+    def print_classification_report(self) -> None:
+        
+        print('\nClassification report for X_train:\n\n')
+        print(classification_report(self.y_train, self.clf.predict(self.X_train)))
+        
+        print('\nClassification report for X_val:\n\n')
+        print(classification_report(self.y_val, self.clf.predict(self.X_val)))
+
+        print('\nClassification report for X_test:\n\n')
+        print(classification_report(self.y_test, self.clf.predict(self.X_test)))
+        
+        
+    def _plot_precision_recall_curve(self, X: pd.core.frame.DataFrame = None,
+                                           y: pd.core.series.Series = None,
+                                           name: str = None) -> None:
+        
+        plt.figure(figsize=(20, 20))
+
+        PrecisionRecallDisplay.from_estimator(self.clf, X, y)
+
+        plt.title(f"Precision-Recall Curve for {name}", fontsize=18)
+
+        ax = plt.gca()
+        ax.tick_params(axis="both", labelsize=12)
+        ax.set_xlabel(ax.get_xlabel(), fontsize=18)
+        ax.set_ylabel(ax.get_ylabel(), fontsize=18)
+
+        for spine in ax.spines.values():
+            spine.set_linewidth(3)
+            
+        legend = ax.get_legend()
+        if legend is not None:
+            for text in legend.get_texts():
+                text.set_fontsize(12)
+
+        legend.get_frame().set_linewidth(3)
+
+        for line in ax.get_lines():
+            line.set_linewidth(3)
+
+        if self.flag_export:
+            plt.savefig(self.path.format(figure=f"precision_recall_curve_{name}"))
+
+        plt.show()
+        
+        
+    def plot_precision_recall_curve(self) -> None:
+        
+        data = {
+            "X_train": (self.X_train, self.y_train),
+            "X_val": (self.X_val, self.y_val),
+            "X_test": (self.X_test, self.y_test),
+        }
+
+        for name, (X, y) in data.items():
+            self._plot_precision_recall_curve(X, y, name)    
+        
+    def _plot_roc_curve(self, X: pd.core.frame.DataFrame = None,
+                              y: pd.core.series.Series = None,
+                              name: str = None) -> None:
+        
+        plt.figure(figsize=(20, 20))
+
+        RocCurveDisplay.from_estimator(self.clf, X, y)
+
+        plt.title(f"ROC for {name}", fontsize=18)
+
+        ax = plt.gca()
+        ax.tick_params(axis="both", labelsize=12)
+        ax.set_xlabel(ax.get_xlabel(), fontsize=18)
+        ax.set_ylabel(ax.get_ylabel(), fontsize=18)
+
+        for spine in ax.spines.values():
+            spine.set_linewidth(3)
+            
+        legend = ax.get_legend()
+        if legend is not None:
+            for text in legend.get_texts():
+                text.set_fontsize(12)
+
+        legend.get_frame().set_linewidth(3)
+
+        for line in ax.get_lines():
+            line.set_linewidth(3)
+
+        if self.flag_export:
+            plt.savefig(self.path.format(figure=f"roc_{name}"))
+
+        plt.show()  
+        
+        
+    def plot_roc(self) -> None:
+        
+        data = {
+            "X_train": (self.X_train, self.y_train),
+            "X_val": (self.X_val, self.y_val),
+            "X_test": (self.X_test, self.y_test),
+        }
+
+        for name, (X, y) in data.items():
+            self._plot_roc_curve(X, y, name)
+            
+            
+    def _plot_confusion_matrices(self, X: pd.core.frame.DataFrame = None,
+                                       y: pd.core.series.Series = None,
+                                       name: str = None) -> None:
+        
+        plt.figure(figsize=(20, 20))
+
+        configs = [
+            (f"\nNon-normalized for {name}\n", None),
+            (f"\nNormalized for {name}\n", "true"),
+        ]
+
+        for title, normalize in configs:
+            display = ConfusionMatrixDisplay.from_estimator(
+                self.clf,
+                X,
+                y,
+                display_labels=[0, 1],
+                cmap=plt.cm.Blues,
+                normalize=normalize
+            )
+
+            display.ax_.set_title(title, fontsize=18)
+
+            display.ax_.tick_params(axis="x", labelsize=18)
+            display.ax_.tick_params(axis="y", labelsize=18)
+            
+            display.ax_.set_xlabel("Predicted label", fontsize=18)
+            display.ax_.set_ylabel("True label", fontsize=18)
+            display.ax_.tick_params(axis="both", labelsize=18)
+            
+            for text in display.text_.ravel():
+                text.set_fontsize(18)
+
+            for spine in display.ax_.spines.values():
+                spine.set_linewidth(3)
+                
+            if display.im_.colorbar is not None:
+                display.im_.colorbar.ax.tick_params(labelsize=18)
+
+            print(display.confusion_matrix)
+            
+        if self.flag_export:
+            plt.savefig(self.path.format(figure=f"cm_{name}"))
+
+        plt.show()
+        
+        
+    def plot_confusion_matrices(self) -> None:
+        
+        data = {
+            "X_train": (self.X_train, self.y_train),
+            "X_val": (self.X_val, self.y_val),
+            "X_test": (self.X_test, self.y_test),
+        }
+
+        for name, (X, y) in data.items():
+            self._plot_confusion_matrices(X, y, name)
+
+        
+    def plot_shap(self) -> None:
+        
+        print("\nShap plots with X_test:\n\n")
+        
+        explainer = shap.TreeExplainer(self.clf, self.X_test)
+        
+        shap_values = explainer(self.X_test, check_additivity=False)
+        
+        shap.plots.beeswarm(shap_values, plot_size=(12, 9))
+        
+        shap.plots.bar(shap_values)
+        
+        
